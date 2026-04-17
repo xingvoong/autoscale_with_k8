@@ -1,0 +1,620 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ML Inference API</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: #0f1117;
+      color: #e1e4e8;
+      min-height: 100vh;
+      padding: 40px 20px;
+    }
+
+    h1 { font-size: 1.5rem; font-weight: 600; margin-bottom: 4px; color: #fff; }
+    .subtitle { font-size: 0.85rem; color: #6e7681; margin-bottom: 36px; }
+
+    .card {
+      background: #161b22;
+      border: 1px solid #30363d;
+      border-radius: 10px;
+      padding: 24px;
+      max-width: 680px;
+      margin: 0 auto 24px;
+    }
+
+    .card h2 { font-size: 1rem; font-weight: 600; margin-bottom: 16px; color: #c9d1d9; }
+
+    textarea {
+      width: 100%;
+      background: #0d1117;
+      border: 1px solid #30363d;
+      border-radius: 6px;
+      color: #e1e4e8;
+      font-size: 0.95rem;
+      padding: 10px 12px;
+      resize: vertical;
+      min-height: 80px;
+      outline: none;
+      transition: border-color 0.15s;
+    }
+    textarea:focus { border-color: #58a6ff; }
+
+    button {
+      margin-top: 12px;
+      padding: 8px 20px;
+      border-radius: 6px;
+      border: none;
+      font-size: 0.9rem;
+      font-weight: 500;
+      cursor: pointer;
+      transition: opacity 0.15s;
+    }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    .btn-primary { background: #238636; color: #fff; }
+    .btn-primary:hover:not(:disabled) { background: #2ea043; }
+    .btn-danger  { background: #da3633; color: #fff; }
+    .btn-danger:hover:not(:disabled)  { background: #f85149; }
+    .btn-secondary { background: #21262d; color: #c9d1d9; border: 1px solid #30363d; }
+    .btn-secondary:hover:not(:disabled) { background: #30363d; }
+
+    .result {
+      margin-top: 14px;
+      padding: 12px 16px;
+      border-radius: 6px;
+      font-size: 0.95rem;
+      display: none;
+    }
+    .result.positive { background: #0d2819; border: 1px solid #238636; color: #3fb950; }
+    .result.negative { background: #2d1117; border: 1px solid #da3633; color: #f85149; }
+    .result.error    { background: #1c1508; border: 1px solid #d29922; color: #e3b341; }
+
+    /* grid controls */
+    .controls {
+      display: grid;
+      grid-template-columns: 1fr 1fr 1fr;
+      gap: 12px;
+      margin-bottom: 16px;
+    }
+    .controls-2 {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+      margin-bottom: 16px;
+    }
+
+    label { display: block; font-size: 0.8rem; color: #8b949e; margin-bottom: 4px; }
+
+    input[type="number"], input[type="text"] {
+      width: 100%;
+      background: #0d1117;
+      border: 1px solid #30363d;
+      border-radius: 6px;
+      color: #e1e4e8;
+      font-size: 0.9rem;
+      padding: 7px 10px;
+      outline: none;
+      transition: border-color 0.15s;
+    }
+    input:focus { border-color: #58a6ff; }
+
+    .load-text-row { margin-bottom: 16px; }
+
+    /* stats grid — 6 cells */
+    .stats {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 10px;
+      margin-top: 16px;
+    }
+
+    .stat {
+      background: #0d1117;
+      border: 1px solid #30363d;
+      border-radius: 6px;
+      padding: 10px;
+      text-align: center;
+      transition: border-color 0.3s, background 0.3s;
+    }
+    .stat.pass { background: #0d2819; border-color: #238636; }
+    .stat.fail { background: #2d1117; border-color: #da3633; }
+    .stat .val {
+      font-size: 1.4rem;
+      font-weight: 700;
+      color: #58a6ff;
+      display: block;
+      transition: color 0.3s;
+    }
+    .stat.pass .val { color: #3fb950; }
+    .stat.fail .val { color: #f85149; }
+    .stat .lbl { font-size: 0.72rem; color: #6e7681; margin-top: 2px; }
+    .stat .limit { font-size: 0.68rem; color: #484f58; margin-top: 1px; }
+
+    .progress-bar-wrap {
+      margin-top: 16px;
+      background: #0d1117;
+      border: 1px solid #30363d;
+      border-radius: 4px;
+      height: 8px;
+      overflow: hidden;
+    }
+    .progress-bar { height: 100%; width: 0%; background: #238636; transition: width 0.3s; }
+
+    canvas {
+      margin-top: 16px;
+      width: 100% !important;
+      max-height: 180px;
+      background: #0d1117;
+      border: 1px solid #30363d;
+      border-radius: 6px;
+    }
+
+    .status-line { margin-top: 10px; font-size: 0.8rem; color: #6e7681; min-height: 18px; }
+
+    /* Verdict */
+    .verdict {
+      display: none;
+      margin-top: 20px;
+      border-radius: 8px;
+      padding: 16px 20px;
+      border: 1px solid;
+    }
+    .verdict.pass { background: #0d2819; border-color: #238636; }
+    .verdict.fail { background: #2d1117; border-color: #da3633; }
+
+    .verdict-header {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-size: 1.1rem;
+      font-weight: 700;
+      margin-bottom: 4px;
+    }
+    .verdict.pass .verdict-header { color: #3fb950; }
+    .verdict.fail .verdict-header { color: #f85149; }
+
+    .verdict-summary {
+      font-size: 0.8rem;
+      color: #6e7681;
+      margin-bottom: 14px;
+    }
+
+    .verdict-checks { list-style: none; }
+    .verdict-checks li {
+      font-size: 0.85rem;
+      padding: 5px 8px;
+      margin-bottom: 4px;
+      border-radius: 5px;
+      display: flex;
+      align-items: baseline;
+      gap: 8px;
+    }
+    .check-pass { background: rgba(35,134,54,0.1); color: #3fb950; }
+    .check-fail { background: rgba(218,54,51,0.1); color: #f85149; }
+    .check-detail { font-size: 0.78rem; opacity: 0.75; margin-left: auto; }
+
+    /* Thresholds card */
+    .threshold-hint {
+      font-size: 0.78rem;
+      color: #6e7681;
+      margin-bottom: 14px;
+    }
+    .saved-badge {
+      display: none;
+      font-size: 0.78rem;
+      color: #3fb950;
+      margin-left: 10px;
+      vertical-align: middle;
+    }
+  </style>
+</head>
+<body>
+
+<div style="max-width:680px;margin:0 auto;">
+  <h1>ML Inference API</h1>
+  <p class="subtitle">Sentiment analysis · DistilBERT · Kubernetes</p>
+
+  <!-- Predict -->
+  <div class="card">
+    <h2>Sentiment Prediction</h2>
+    <textarea id="predictText" placeholder="Type something to analyze...">I love building things with Kubernetes!</textarea>
+    <button class="btn-primary" id="predictBtn" onclick="runPredict()">Analyze</button>
+    <div class="result" id="predictResult"></div>
+  </div>
+
+  <!-- Acceptance Thresholds -->
+  <div class="card">
+    <h2>Acceptance Thresholds <span class="saved-badge" id="savedBadge">✓ Saved</span></h2>
+    <p class="threshold-hint">Load test results are checked against these values. Saved to browser storage.</p>
+    <div class="controls-2">
+      <div>
+        <label>p50 latency limit (ms)</label>
+        <input type="number" id="thP50" value="150" min="1" />
+      </div>
+      <div>
+        <label>p99 latency limit (ms)</label>
+        <input type="number" id="thP99" value="1500" min="1" />
+      </div>
+      <div>
+        <label>Avg latency limit (ms)</label>
+        <input type="number" id="thAvg" value="500" min="1" />
+      </div>
+      <div>
+        <label>Max error rate (%)</label>
+        <input type="number" id="thErr" value="5" min="0" max="100" step="0.1" />
+      </div>
+    </div>
+    <button class="btn-secondary" onclick="saveThresholds()" style="margin-top:0;">Save Thresholds</button>
+  </div>
+
+  <!-- Load Test -->
+  <div class="card">
+    <h2>Load Test</h2>
+    <div class="controls">
+      <div>
+        <label>Concurrency (VUs)</label>
+        <input type="number" id="vus" value="10" min="1" max="200" />
+      </div>
+      <div>
+        <label>Duration (seconds)</label>
+        <input type="number" id="duration" value="30" min="1" max="300" />
+      </div>
+      <div>
+        <label>Req delay (ms)</label>
+        <input type="number" id="delay" value="0" min="0" max="5000" />
+      </div>
+    </div>
+    <div class="load-text-row">
+      <label>Payload text</label>
+      <input type="text" id="loadText" value="cpu load test cpu load test cpu load test" />
+    </div>
+    <button class="btn-primary" id="startBtn" onclick="startLoad()">Start Load Test</button>
+    <button class="btn-danger"  id="stopBtn"  onclick="stopLoad()" style="display:none;margin-left:8px;">Stop</button>
+
+    <div class="progress-bar-wrap" style="margin-top:14px;">
+      <div class="progress-bar" id="progressBar"></div>
+    </div>
+    <p class="status-line" id="statusLine">Idle</p>
+
+    <div class="stats">
+      <div class="stat" id="boxTotal"><span class="val" id="statTotal">0</span><span class="lbl">Total Requests</span></div>
+      <div class="stat" id="boxRps">  <span class="val" id="statRps">0</span><span class="lbl">Peak Req / sec</span></div>
+      <div class="stat" id="boxAvg">  <span class="val" id="statAvg">—</span><span class="lbl">Avg Latency (ms)</span><span class="limit" id="limAvg"></span></div>
+      <div class="stat" id="boxP50">  <span class="val" id="statP50">—</span><span class="lbl">p50 Latency (ms)</span><span class="limit" id="limP50"></span></div>
+      <div class="stat" id="boxP99">  <span class="val" id="statP99">—</span><span class="lbl">p99 Latency (ms)</span><span class="limit" id="limP99"></span></div>
+      <div class="stat" id="boxErr">  <span class="val" id="statErr">0</span><span class="lbl">Error Rate</span><span class="limit" id="limErr"></span></div>
+    </div>
+
+    <canvas id="chart"></canvas>
+
+    <!-- Verdict -->
+    <div class="verdict" id="verdict">
+      <div class="verdict-header">
+        <span id="verdictIcon"></span>
+        <span id="verdictTitle"></span>
+      </div>
+      <p class="verdict-summary" id="verdictSummary"></p>
+      <ul class="verdict-checks" id="verdictChecks"></ul>
+    </div>
+  </div>
+</div>
+
+<script>
+// ── Thresholds ────────────────────────────────────────────────────────────────
+const STORAGE_KEY = 'ml_api_thresholds';
+
+function loadThresholds() {
+  const saved = localStorage.getItem(STORAGE_KEY);
+  if (!saved) return;
+  const t = JSON.parse(saved);
+  document.getElementById('thP50').value = t.p50 ?? 150;
+  document.getElementById('thP99').value = t.p99 ?? 1500;
+  document.getElementById('thAvg').value = t.avg ?? 500;
+  document.getElementById('thErr').value = t.err ?? 5;
+}
+
+function saveThresholds() {
+  const t = {
+    p50: parseFloat(document.getElementById('thP50').value),
+    p99: parseFloat(document.getElementById('thP99').value),
+    avg: parseFloat(document.getElementById('thAvg').value),
+    err: parseFloat(document.getElementById('thErr').value),
+  };
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(t));
+  const badge = document.getElementById('savedBadge');
+  badge.style.display = 'inline';
+  setTimeout(() => { badge.style.display = 'none'; }, 2000);
+}
+
+function getThresholds() {
+  return {
+    p50: parseFloat(document.getElementById('thP50').value),
+    p99: parseFloat(document.getElementById('thP99').value),
+    avg: parseFloat(document.getElementById('thAvg').value),
+    err: parseFloat(document.getElementById('thErr').value),
+  };
+}
+
+loadThresholds();
+
+// ── Predict ───────────────────────────────────────────────────────────────────
+async function runPredict() {
+  const text = document.getElementById('predictText').value.trim();
+  const btn  = document.getElementById('predictBtn');
+  const res  = document.getElementById('predictResult');
+  if (!text) return;
+
+  btn.disabled = true;
+  btn.textContent = 'Analyzing…';
+  res.style.display = 'none';
+
+  try {
+    const r = await fetch('/predict', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ input: text }),
+    });
+    const data = await r.json();
+    const pct  = (data.score * 100).toFixed(1);
+    res.className = 'result ' + data.label.toLowerCase();
+    res.textContent = `${data.label}  ·  ${pct}% confidence`;
+    res.style.display = 'block';
+  } catch (e) {
+    res.className = 'result error';
+    res.textContent = 'Error: ' + e.message;
+    res.style.display = 'block';
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Analyze';
+  }
+}
+
+document.getElementById('predictText').addEventListener('keydown', e => {
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); runPredict(); }
+});
+
+// ── Load Test ─────────────────────────────────────────────────────────────────
+let running      = false;
+let totalReqs    = 0;
+let totalErr     = 0;
+let tickLatencies = [];
+let allLatencies  = [];
+let startTime    = null;
+let rpsHistory   = [];
+let prevCount    = 0;
+let peakRps      = 0;
+let tickHandle   = null;
+let chartCtx     = null;
+let animFrame    = null;
+
+function percentile(sorted, p) {
+  if (!sorted.length) return null;
+  const idx = Math.ceil((p / 100) * sorted.length) - 1;
+  return sorted[Math.max(0, idx)];
+}
+
+function initChart() {
+  const canvas = document.getElementById('chart');
+  chartCtx = canvas.getContext('2d');
+  canvas.width  = canvas.offsetWidth;
+  canvas.height = 180;
+}
+
+function drawChart() {
+  if (!chartCtx) return;
+  const canvas = document.getElementById('chart');
+  const W = canvas.width, H = canvas.height;
+  const pad = { top: 14, right: 12, bottom: 24, left: 40 };
+
+  chartCtx.clearRect(0, 0, W, H);
+
+  if (rpsHistory.length < 2) {
+    animFrame = requestAnimationFrame(drawChart);
+    return;
+  }
+
+  const maxRps = Math.max(...rpsHistory.map(p => p.rps), 1);
+  const minT   = rpsHistory[0].t;
+  const maxT   = rpsHistory[rpsHistory.length - 1].t;
+  const rangeT = Math.max(maxT - minT, 1);
+
+  const toX = t => pad.left + ((t - minT) / rangeT) * (W - pad.left - pad.right);
+  const toY = v => pad.top  + (1 - v / maxRps)      * (H - pad.top  - pad.bottom);
+
+  // grid
+  chartCtx.strokeStyle = '#21262d';
+  chartCtx.lineWidth   = 1;
+  for (let i = 0; i <= 4; i++) {
+    const y = pad.top + (i / 4) * (H - pad.top - pad.bottom);
+    chartCtx.beginPath(); chartCtx.moveTo(pad.left, y); chartCtx.lineTo(W - pad.right, y); chartCtx.stroke();
+    chartCtx.fillStyle = '#6e7681';
+    chartCtx.font      = '10px sans-serif';
+    chartCtx.fillText(Math.round(maxRps * (1 - i / 4)), 2, y + 4);
+  }
+
+  // fill
+  chartCtx.beginPath();
+  chartCtx.moveTo(toX(rpsHistory[0].t), H - pad.bottom);
+  rpsHistory.forEach(p => chartCtx.lineTo(toX(p.t), toY(p.rps)));
+  chartCtx.lineTo(toX(rpsHistory[rpsHistory.length - 1].t), H - pad.bottom);
+  chartCtx.closePath();
+  chartCtx.fillStyle = 'rgba(35,134,54,0.2)';
+  chartCtx.fill();
+
+  // line
+  chartCtx.beginPath();
+  rpsHistory.forEach((p, i) => {
+    i === 0 ? chartCtx.moveTo(toX(p.t), toY(p.rps)) : chartCtx.lineTo(toX(p.t), toY(p.rps));
+  });
+  chartCtx.strokeStyle = '#3fb950';
+  chartCtx.lineWidth   = 2;
+  chartCtx.stroke();
+
+  if (running) animFrame = requestAnimationFrame(drawChart);
+}
+
+function tick() {
+  const elapsed  = (Date.now() - startTime) / 1000;
+  const duration = parseInt(document.getElementById('duration').value);
+
+  const rps = totalReqs - prevCount;
+  prevCount = totalReqs;
+  if (rps > peakRps) peakRps = rps;
+  rpsHistory.push({ t: elapsed, rps });
+
+  const sorted = allLatencies.slice().sort((a, b) => a - b);
+  const avg = sorted.length ? Math.round(sorted.reduce((a, b) => a + b, 0) / sorted.length) : null;
+  const p50 = sorted.length ? percentile(sorted, 50) : null;
+  const p99 = sorted.length ? percentile(sorted, 99) : null;
+  const errPct = totalReqs ? (totalErr / totalReqs * 100) : 0;
+
+  document.getElementById('statTotal').textContent = totalReqs;
+  document.getElementById('statRps').textContent   = peakRps;
+  document.getElementById('statErr').textContent   = errPct.toFixed(1) + '%';
+  document.getElementById('statAvg').textContent   = avg !== null ? avg : '—';
+  document.getElementById('statP50').textContent   = p50 !== null ? p50 : '—';
+  document.getElementById('statP99').textContent   = p99 !== null ? p99 : '—';
+  document.getElementById('progressBar').style.width = Math.min(100, (elapsed / duration) * 100) + '%';
+  document.getElementById('statusLine').textContent  = `Running… ${Math.round(elapsed)}s / ${duration}s`;
+
+  tickLatencies = [];
+}
+
+function delta(actual, limit) {
+  if (actual === null) return 'n/a';
+  if (actual <= limit) {
+    const pct = Math.round((1 - actual / limit) * 100);
+    return `${pct}% under limit`;
+  }
+  const x = (actual / limit).toFixed(1);
+  return `${x}× over limit`;
+}
+
+function colorStat(id, pass) {
+  const el = document.getElementById(id);
+  el.classList.remove('pass', 'fail');
+  if (pass !== null) el.classList.add(pass ? 'pass' : 'fail');
+}
+
+function showVerdict() {
+  const th     = getThresholds();
+  const sorted = allLatencies.slice().sort((a, b) => a - b);
+  const avg    = sorted.length ? Math.round(sorted.reduce((a, b) => a + b, 0) / sorted.length) : null;
+  const p50    = sorted.length ? percentile(sorted, 50) : null;
+  const p99    = sorted.length ? percentile(sorted, 99) : null;
+  const errPct = totalReqs ? (totalErr / totalReqs) * 100 : 0;
+
+  const checks = [
+    { label: 'p50 latency', actual: p50 !== null ? p50 + 'ms' : 'n/a', limit: th.p50 + 'ms', detail: delta(p50, th.p50), pass: p50 !== null && p50 <= th.p50, box: 'boxP50', limId: 'limP50' },
+    { label: 'p99 latency', actual: p99 !== null ? p99 + 'ms' : 'n/a', limit: th.p99 + 'ms', detail: delta(p99, th.p99), pass: p99 !== null && p99 <= th.p99, box: 'boxP99', limId: 'limP99' },
+    { label: 'Avg latency', actual: avg !== null ? avg + 'ms' : 'n/a', limit: th.avg + 'ms', detail: delta(avg, th.avg), pass: avg !== null && avg <= th.avg, box: 'boxAvg', limId: 'limAvg' },
+    { label: 'Error rate',  actual: errPct.toFixed(2) + '%',           limit: th.err + '%',  detail: delta(errPct, th.err), pass: errPct <= th.err,             box: 'boxErr', limId: 'limErr' },
+  ];
+
+  const passed  = checks.filter(c => c.pass).length;
+  const allPass = passed === checks.length;
+
+  // colour stat boxes and show limit hint
+  checks.forEach(c => {
+    colorStat(c.box, c.pass);
+    document.getElementById(c.limId).textContent = `limit ${c.limit}`;
+  });
+
+  const el      = document.getElementById('verdict');
+  const title   = document.getElementById('verdictTitle');
+  const icon    = document.getElementById('verdictIcon');
+  const summary = document.getElementById('verdictSummary');
+  const list    = document.getElementById('verdictChecks');
+
+  el.className      = 'verdict ' + (allPass ? 'pass' : 'fail');
+  icon.textContent  = allPass ? '✓' : '✗';
+  title.textContent = allPass ? 'ACCEPTED' : 'NOT ACCEPTED';
+  summary.textContent = `${passed} of ${checks.length} checks passed`;
+  list.innerHTML = checks.map(c =>
+    `<li class="${c.pass ? 'check-pass' : 'check-fail'}">
+      ${c.pass ? '✓' : '✗'} ${c.label}: <strong>${c.actual}</strong>
+      <span class="check-detail">${c.detail} · limit ${c.limit}</span>
+    </li>`
+  ).join('');
+  el.style.display = 'block';
+}
+
+async function worker(text, delay) {
+  while (running) {
+    const t0 = Date.now();
+    try {
+      const r = await fetch('/predict', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ input: text }),
+      });
+      if (!r.ok) totalErr++;
+      else { const ms = Date.now() - t0; allLatencies.push(ms); tickLatencies.push(ms); }
+    } catch {
+      totalErr++;
+    }
+    totalReqs++;
+    if (delay > 0) await new Promise(r => setTimeout(r, delay));
+  }
+}
+
+function startLoad() {
+  const vus      = parseInt(document.getElementById('vus').value);
+  const duration = parseInt(document.getElementById('duration').value);
+  const delay    = parseInt(document.getElementById('delay').value) || 0;
+  const text     = document.getElementById('loadText').value || 'load test';
+
+  running       = true;
+  totalReqs     = 0;
+  totalErr      = 0;
+  prevCount     = 0;
+  peakRps       = 0;
+  tickLatencies = [];
+  allLatencies  = [];
+  rpsHistory    = [];
+  startTime     = Date.now();
+
+  document.getElementById('startBtn').style.display = 'none';
+  document.getElementById('stopBtn').style.display  = '';
+  document.getElementById('progressBar').style.width = '0%';
+  document.getElementById('progressBar').style.background = '#238636';
+  document.getElementById('verdict').style.display = 'none';
+  ['boxAvg','boxP50','boxP99','boxErr'].forEach(id => {
+    const el = document.getElementById(id);
+    el.classList.remove('pass','fail');
+  });
+  ['limAvg','limP50','limP99','limErr'].forEach(id => {
+    document.getElementById(id).textContent = '';
+  });
+
+  initChart();
+  animFrame  = requestAnimationFrame(drawChart);
+  tickHandle = setInterval(tick, 1000);
+
+  for (let i = 0; i < vus; i++) worker(text, delay);
+
+  setTimeout(() => { if (running) stopLoad(); }, duration * 1000);
+}
+
+function stopLoad() {
+  running = false;
+  clearInterval(tickHandle);
+  cancelAnimationFrame(animFrame);
+  tick();
+  drawChart();
+
+  document.getElementById('startBtn').style.display = '';
+  document.getElementById('stopBtn').style.display  = 'none';
+  document.getElementById('progressBar').style.background = '#58a6ff';
+  document.getElementById('statusLine').textContent =
+    `Done — ${totalReqs} requests, ${totalErr} errors`;
+
+  showVerdict();
+}
+</script>
+</body>
+</html>

@@ -3,10 +3,9 @@ kind: Service
 metadata:
   name: ml-api-service
 spec:
-  type: NodePort
   selector:
     app: ml-api
   ports:
     - port: 80
       targetPort: 8000
-      nodePort: 30007
+  type: NodePort

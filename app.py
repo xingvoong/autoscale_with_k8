@@ -1,15 +1,30 @@
 from fastapi import FastAPI
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
+from pydantic import BaseModel
+from transformers import pipeline
 
 app = FastAPI()
 
-def model(x: str):
-    return x[::-1]  # fake ML model
+# force lightweight inference mode (no explicit torch import in code)
+model = pipeline(
+    "sentiment-analysis",
+    model="distilbert-base-uncased-finetuned-sst-2-english"
+)
 
-@app.get("/health")
-def health():
-    return {"status": "ok"}
+class InputData(BaseModel):
+    input: str
+
+@app.get("/")
+def index():
+    return FileResponse("static/index.html")
 
 @app.post("/predict")
-def predict(data: dict):
-    text = data.get("input", "")
-    return {"output": model(text)}
+def predict(data: InputData):
+    result = model(data.input)[0]
+    return {
+        "label": result["label"],
+        "score": float(result["score"])
+    }
+
+app.mount("/static", StaticFiles(directory="static"), name="static")
