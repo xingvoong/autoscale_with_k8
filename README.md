@@ -10,10 +10,11 @@ Runs DistilBERT sentiment analysis (`distilbert-base-uncased-finetuned-sst-2-eng
 
 **API:**
 - `GET /` — serves the UI
+- `GET /health` — readiness check, returns 503 until model is loaded
 - `POST /predict` — accepts `{ "input": "<text>" }`, returns `{ "label": "POSITIVE"|"NEGATIVE", "score": 0.99 }`
 
 **Stack:**
-- FastAPI + Uvicorn (multi-worker)
+- FastAPI + Uvicorn (multi-worker, async inference via ThreadPoolExecutor)
 - HuggingFace `transformers` + PyTorch for CPU inference
 - Docker (`python:3.10-slim`, port 8000)
 - Kubernetes Deployment + NodePort Service + HPA
@@ -39,11 +40,15 @@ Open `http://localhost:8000` after starting the server.
 
 | File | Purpose |
 |---|---|
-| `deployment.yaml` | 1 replica, CPU requests: 200m / limits: 500m |
+| `deployment.yaml` | 1 replica, CPU requests: 200m / limits: 500m, readiness + liveness probes |
 | `service.yaml` | NodePort, port 80 → container 8000 |
 | `hpa.yaml` | Scales 1→5 pods at 50% CPU utilization |
 
 The low CPU limit is intentional — it forces the HPA to trigger under load, demonstrating autoscaling behavior.
+
+**Health probes:**
+- **Readiness** — pod only receives traffic once `/health` returns 200 (model fully loaded, ~15s)
+- **Liveness** — pod is restarted if `/health` stops responding (catches hangs)
 
 ---
 
@@ -51,10 +56,16 @@ The low CPU limit is intentional — it forces the HPA to trigger under load, de
 
 ```
 User Traffic → Kubernetes Service (NodePort)
-             → Pods (FastAPI inference workers)
-             → Metrics Server
-             → HPA → scale up/down pods
+             → Pods (FastAPI, async inference via ThreadPoolExecutor)
+                  ↳ /health (readiness + liveness probe)
+             → Metrics Server (CPU utilization)
+             → HPA → scale 1–5 pods
 ```
+
+**Key design decisions:**
+- Inference runs in a `ThreadPoolExecutor` so the async event loop stays unblocked under concurrency
+- Model loads during FastAPI lifespan startup; `/health` returns 503 until ready, preventing traffic to cold pods
+- HPA targets 50% CPU — under load, new pods spin up and distribute requests, cutting p99 latency
 
 ---
 
