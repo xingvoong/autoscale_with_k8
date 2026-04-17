@@ -1,0 +1,14 @@
+FROM python:3.10-slim
+
+WORKDIR /app
+
+COPY requirements-worker.txt requirements.txt
+
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Pre-download model into the image
+RUN python -c "from transformers import pipeline; pipeline('sentiment-analysis', model='distilbert-base-uncased-finetuned-sst-2-english')"
+
+COPY worker.py .
+
+CMD ["python", "worker.py"]

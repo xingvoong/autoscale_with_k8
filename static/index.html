@@ -220,10 +220,20 @@
 
   <!-- Predict -->
   <div class="card">
-    <h2>Sentiment Prediction</h2>
+    <h2>Real-time Processing</h2>
+    <p style="font-size:0.8rem;color:#6e7681;margin-bottom:12px;">Single request · instant response · <code style="color:#58a6ff;">POST /predict</code></p>
     <textarea id="predictText" placeholder="Type something to analyze...">I love building things with Kubernetes!</textarea>
     <button class="btn-primary" id="predictBtn" onclick="runPredict()">Analyze</button>
     <div class="result" id="predictResult"></div>
+  </div>
+
+  <!-- Batch Predict -->
+  <div class="card">
+    <h2>Batch Processing</h2>
+    <p style="font-size:0.8rem;color:#6e7681;margin-bottom:12px;">Multiple inputs · single request · <code style="color:#58a6ff;">POST /batch</code> — enter one text per line.</p>
+    <textarea id="batchText" placeholder="I love this product!&#10;This was a terrible experience.&#10;It was okay, nothing special." style="min-height:120px;"></textarea>
+    <button class="btn-primary" id="batchBtn" onclick="runBatch()">Analyze Batch</button>
+    <div id="batchResults" style="margin-top:14px;"></div>
   </div>
 
   <!-- Acceptance Thresholds -->
@@ -254,6 +264,19 @@
   <!-- Load Test -->
   <div class="card">
     <h2>Load Test</h2>
+    <div class="controls-2" style="margin-bottom:16px;">
+      <div>
+        <label>Mode</label>
+        <select id="loadMode" style="width:100%;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#e1e4e8;font-size:0.9rem;padding:7px 10px;outline:none;">
+          <option value="realtime">Real-time · POST /predict</option>
+          <option value="batch">Batch · POST /batch</option>
+        </select>
+      </div>
+      <div id="batchSizeWrap" style="display:none;">
+        <label>Batch size (inputs/req)</label>
+        <input type="number" id="batchSize" value="10" min="1" max="100" />
+      </div>
+    </div>
     <div class="controls">
       <div>
         <label>Concurrency (VUs)</label>
@@ -370,6 +393,49 @@ async function runPredict() {
   } finally {
     btn.disabled = false;
     btn.textContent = 'Analyze';
+  }
+}
+
+// ── Load mode toggle ──────────────────────────────────────────────────────────
+document.getElementById('loadMode').addEventListener('change', function() {
+  document.getElementById('batchSizeWrap').style.display = this.value === 'batch' ? '' : 'none';
+});
+
+// ── Batch Predict ─────────────────────────────────────────────────────────────
+async function runBatch() {
+  const lines = document.getElementById('batchText').value
+    .split('\n')
+    .map(l => l.trim())
+    .filter(l => l.length > 0);
+
+  if (!lines.length) return;
+
+  const btn = document.getElementById('batchBtn');
+  const out = document.getElementById('batchResults');
+  btn.disabled = true;
+  btn.textContent = 'Analyzing…';
+  out.innerHTML = '';
+
+  try {
+    const r = await fetch('/batch', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ inputs: lines }),
+    });
+    const data = await r.json();
+    out.innerHTML = data.map((d, i) => {
+      const cls = d.label.toLowerCase();
+      const pct = (d.score * 100).toFixed(1);
+      return `<div class="result ${cls}" style="display:block;margin-bottom:8px;">
+        <span style="color:#6e7681;font-size:0.8rem;">${lines[i]}</span><br/>
+        ${d.label} &middot; ${pct}% confidence
+      </div>`;
+    }).join('');
+  } catch (e) {
+    out.innerHTML = `<div class="result error" style="display:block;">Error: ${e.message}</div>`;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Analyze Batch';
   }
 }
 
@@ -543,15 +609,24 @@ function showVerdict() {
   el.style.display = 'block';
 }
 
-async function worker(text, delay) {
+async function worker(text, delay, mode, batchSize) {
   while (running) {
     const t0 = Date.now();
     try {
-      const r = await fetch('/predict', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ input: text }),
-      });
+      let r;
+      if (mode === 'batch') {
+        r = await fetch('/batch', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ inputs: Array(batchSize).fill(text) }),
+        });
+      } else {
+        r = await fetch('/predict', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ input: text }),
+        });
+      }
       if (!r.ok) totalErr++;
       else { const ms = Date.now() - t0; allLatencies.push(ms); tickLatencies.push(ms); }
     } catch {
@@ -595,7 +670,9 @@ function startLoad() {
   animFrame  = requestAnimationFrame(drawChart);
   tickHandle = setInterval(tick, 1000);
 
-  for (let i = 0; i < vus; i++) worker(text, delay);
+  const mode      = document.getElementById('loadMode').value;
+  const batchSize = parseInt(document.getElementById('batchSize').value) || 10;
+  for (let i = 0; i < vus; i++) worker(text, delay, mode, batchSize);
 
   setTimeout(() => { if (running) stopLoad(); }, duration * 1000);
 }

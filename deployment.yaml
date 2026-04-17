@@ -18,11 +18,14 @@ spec:
           imagePullPolicy: Never
           ports:
             - containerPort: 8000
+          env:
+            - name: REDIS_URL
+              value: "redis://redis-service:6379"
           resources:
             requests:
-              cpu: "200m"
+              cpu: "100m"
             limits:
-              cpu: "500m"
+              cpu: "250m"
           readinessProbe:
             httpGet:
               path: /health

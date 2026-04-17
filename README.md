@@ -1,23 +1,25 @@
 # Kubernetes ML Inference + Autoscaling System
 
-A FastAPI sentiment analysis service deployed on Kubernetes with a browser-based UI, load testing, and CPU-based autoscaling via Horizontal Pod Autoscaler (HPA).
+A FastAPI sentiment analysis service deployed on Kubernetes with a decoupled API + worker architecture, Redis job queue, browser-based UI, load testing, and CPU-based autoscaling via Horizontal Pod Autoscaler (HPA).
 
 ---
 
 ## What it does
 
-Runs DistilBERT sentiment analysis (`distilbert-base-uncased-finetuned-sst-2-english`) as a REST API on Kubernetes. Includes a built-in UI for predictions and load testing with configurable acceptance thresholds.
+Runs DistilBERT sentiment analysis (`distilbert-base-uncased-finetuned-sst-2-english`) via a split API + worker design. The API server handles HTTP and queues jobs over Redis; separate worker pods load the model and process inference. Includes a built-in UI for predictions and load testing with configurable acceptance thresholds.
 
 **API:**
 - `GET /` — serves the UI
-- `GET /health` — readiness check, returns 503 until model is loaded
+- `GET /health` — readiness check, returns 503 if Redis is unreachable
 - `POST /predict` — accepts `{ "input": "<text>" }`, returns `{ "label": "POSITIVE"|"NEGATIVE", "score": 0.99 }`
+- `POST /batch` — accepts `{ "inputs": ["text1", "text2", ...] }`, returns array of `{ "label", "score" }` (30s timeout)
 
 **Stack:**
-- FastAPI + Uvicorn (multi-worker, async inference via ThreadPoolExecutor)
-- HuggingFace `transformers` + PyTorch for CPU inference
-- Docker (`python:3.10-slim`, port 8000)
-- Kubernetes Deployment + NodePort Service + HPA
+- FastAPI + Uvicorn (async, no ML dependencies)
+- Separate ML worker: HuggingFace `transformers` + PyTorch for CPU inference
+- Redis as job queue and result store
+- Docker (`python:3.10-slim`), two images: `ml-api` and `ml-worker`
+- Kubernetes: API Deployment + Worker Deployment + Redis Deployment + NodePort Service + two HPAs
 
 ---
 
@@ -40,107 +42,145 @@ Open `http://localhost:8000` after starting the server.
 
 | File | Purpose |
 |---|---|
-| `deployment.yaml` | 1 replica, CPU requests: 200m / limits: 500m, readiness + liveness probes |
-| `service.yaml` | NodePort, port 80 → container 8000 |
-| `hpa.yaml` | Scales 1→5 pods at 50% CPU utilization |
+| `deployment.yaml` | API deployment, 1 replica, CPU requests: 100m / limits: 250m, readiness + liveness probes |
+| `worker-deployment.yaml` | Worker deployment, 1 replica, CPU requests: 200m / limits: 500m, readiness probe |
+| `redis.yaml` | Redis deployment + ClusterIP service (`redis-service:6379`) |
+| `service.yaml` | NodePort, port 80 → API container 8000 |
+| `hpa.yaml` | Scales API pods 1→5 at 50% CPU utilization |
+| `hpa-worker.yaml` | Scales worker pods 1→5 at 50% CPU utilization |
 
-The low CPU limit is intentional — it forces the HPA to trigger under load, demonstrating autoscaling behavior.
+The low CPU limits are intentional — they force the HPAs to trigger under load, demonstrating autoscaling behavior.
 
 **Health probes:**
-- **Readiness** — pod only receives traffic once `/health` returns 200 (model fully loaded, ~15s)
-- **Liveness** — pod is restarted if `/health` stops responding (catches hangs)
+- **API readiness** — pod only receives traffic once `/health` returns 200 (Redis reachable)
+- **API liveness** — pod is restarted if `/health` stops responding (catches hangs)
+- **Worker readiness** — exec probe pings Redis before the worker is considered ready
 
 ---
 
 ## Architecture
 
+### Batch processing flow
+
 ```
-                   ┌─────────────────────────────────────────────────────┐
-                   │                  Kubernetes Cluster                  │
-                   │                                                      │
-  HTTP Request     │   ┌─────────────────────────────────────────────┐   │
-──────────────────►│   │           NodePort Service :80               │   │
-                   │   └──────────────────┬──────────────────────────┘   │
-                   │                      │ load balances                 │
-                   │           ┌──────────┼──────────┐                   │
-                   │           ▼          ▼          ▼                   │
-                   │      ┌─────────┐┌─────────┐┌─────────┐             │
-                   │      │  Pod 1  ││  Pod 2  ││  Pod 3  │  (each pod) │
-                   │      │  :8000  ││  :8000  ││  :8000  │             │
-                   │      │ FastAPI ││ FastAPI ││ FastAPI │             │
-                   │      └────┬────┘└────┬────┘└────┬────┘             │
-                   │           │          │          │                   │
-                   │           └──────────┼──────────┘                   │
-                   │                      │                               │
-                   │          ┌───────────┴────────────┐                 │
-                   │          │  /health  → 503 until   │                 │
-                   │          │           model loaded  │◄── readiness   │
-                   │          │                         │    + liveness  │
-                   │          │  /predict → ThreadPool  │    probes      │
-                   │          │            → DistilBERT │                │
-                   │          └─────────────────────────┘                │
-                   │                                                      │
-                   │   ┌────────────────┐         ┌────────────────┐    │
-                   │   │ Metrics Server │◄─queries─│      HPA       │    │
-                   │   │  (CPU / pod)   │          │  target: 100m  │    │
-                   │   └────────────────┘          │  (50% of 200m) │    │
-                   │                               └───────┬────────┘    │
-                   │                                       │ scale       │
-                   │                               ┌───────▼────────┐    │
-                   │                               │   Deployment   │    │
-                   │                               │   1 → 5 pods   │    │
-                   │                               └────────────────┘    │
-                   │                                                      │
-                   └─────────────────────────────────────────────────────┘
+                        ┌──────────────────────────────────────────────────────────────────┐
+                        │                        Kubernetes Cluster                         │
+                        │                                                                   │
+  POST /predict         │  ┌──────────────────────────────────────────────────────────┐   │
+  POST /batch     ──────┼─►│              NodePort Service :80                         │   │
+                        │  └──────────────────────┬───────────────────────────────────┘   │
+                        │                         │ load balances                          │
+                        │              ┌──────────┴──────────┐                            │
+                        │              ▼                      ▼                            │
+                        │       ┌────────────┐        ┌────────────┐                      │
+                        │       │  API Pod 1 │        │  API Pod 2 │   (ml-api)           │
+                        │       │  FastAPI   │        │  FastAPI   │   no ML deps         │
+                        │       └─────┬──────┘        └─────┬──────┘                      │
+                        │             │  1. enqueue job      │                             │
+                        │             │     (job_id, inputs) │                             │
+                        │             ▼                      ▼                             │
+                        │       ┌──────────────────────────────────┐                      │
+                        │       │           Redis                   │                      │
+                        │       │   LIST  ml:jobs        ◄─ rpush  │                      │
+                        │       │   STRING ml:result:{id} ─► blpop │                      │
+                        │       └──────────────┬───────────────────┘                      │
+                        │                      │  2. blpop (blocking dequeue)              │
+                        │          ┌───────────┴──────────┐                               │
+                        │          ▼                       ▼                               │
+                        │   ┌────────────┐        ┌────────────┐                          │
+                        │   │ Worker Pod │        │ Worker Pod │   (ml-worker)            │
+                        │   │ DistilBERT │        │ DistilBERT │   model pre-loaded       │
+                        │   └─────┬──────┘        └─────┬──────┘                          │
+                        │         │  3. run inference    │                                 │
+                        │         │     all inputs       │                                 │
+                        │         │  4. rpush result     │                                 │
+                        │         └──────────┬───────────┘                                │
+                        │                    ▼                                             │
+                        │       ┌──────────────────────────────────┐                      │
+                        │       │           Redis                   │                      │
+                        │       │   ml:result:{job_id}  (TTL 60s)  │                      │
+                        │       └──────────────┬───────────────────┘                      │
+                        │                      │  5. API blpop — unblocks                  │
+                        │              ┌───────┴───────┐                                  │
+                        │              ▼               ▼                                   │
+                        │       ┌────────────┐  ┌────────────┐                            │
+                        │       │  API Pod 1 │  │  API Pod 2 │                            │
+                        │       └─────┬──────┘  └─────┬──────┘                            │
+                        │             └────────┬───────┘                                  │
+                        │                      │  6. return JSON to client                 │
+                        └──────────────────────┼──────────────────────────────────────────┘
+                                               ▼
+                                         HTTP response
+                                    [{"label":"POSITIVE","score":0.99}, ...]
 ```
 
 **How a request flows:**
-1. Request hits the NodePort Service, which load balances across available pods
-2. Each pod only receives traffic once `/health` returns 200 (model fully loaded, ~15s)
-3. `/predict` offloads inference to a `ThreadPoolExecutor` — event loop stays free for concurrent requests
-4. DistilBERT runs on CPU and returns `POSITIVE`/`NEGATIVE` + confidence score
+1. Client sends `POST /batch` with `{ "inputs": ["text1", "text2", ...] }` (or `POST /predict` for a single input)
+2. API pod assigns a UUID `job_id`, serializes the job, and pushes it onto the `ml:jobs` Redis list (`rpush`)
+3. API pod blocks on `blpop ml:result:{job_id}` — waiting up to 30s (10s for `/predict`)
+4. A worker pod dequeues the job via `blpop ml:jobs` (blocking pop — one job per worker at a time)
+5. Worker runs all inputs through DistilBERT in a single batched call, then pushes the result JSON to `ml:result:{job_id}` with a 60s TTL
+6. The waiting API pod unblocks, reads the result, and returns it to the client
 
 **How autoscaling works:**
 1. Metrics Server collects CPU usage per pod every 15s
-2. HPA queries Metrics Server and checks if average CPU exceeds 100m (50% of the 200m request)
-3. If yes, HPA scales up the Deployment (max 5 pods); if load drops, scales back down to 1
-4. New pods don't receive traffic until their readiness probe passes (~15s warmup)
+2. API HPA scales API pods 1→5 when average CPU exceeds 50% of the 100m request (50m)
+3. Worker HPA scales worker pods 1→5 when average CPU exceeds 50% of the 200m request (100m)
+4. Workers are the CPU bottleneck (model inference); API pods are lightweight and scale for connection concurrency
+5. New pods don't receive traffic until their readiness probes pass
+
+### Key design properties
+
+- **Decoupled scaling** — API and worker pods scale independently; a spike in connections scales API pods, a spike in inference load scales workers
+- **No ML in the API** — `ml-api` image has no `torch`/`transformers` dependencies, keeping it small and fast to start
+- **Model pre-loaded** — `ml-worker` image bakes the DistilBERT weights in at build time; workers are ready as soon as the container starts
+- **Job isolation** — each request gets a unique `job_id`; results are keyed by ID so concurrent requests never collide
+- **Backpressure** — if all workers are busy the Redis queue grows; clients block up to the timeout, then receive a 504
 
 ---
 
 ## Running locally
 
 ```bash
-# install dependencies
-pip install -r requirements.txt
+# start Redis
+docker run -p 6379:6379 redis:7-alpine
 
-# run with 3 workers (simulates multiple pods)
-uvicorn app:app --host 0.0.0.0 --port 8000 --workers 3
+# terminal 1 — API server (no ML deps)
+pip install -r requirements-api.txt
+uvicorn app:app --host 0.0.0.0 --port 8000
+
+# terminal 2 — ML worker
+pip install -r requirements-worker.txt
+python worker.py
 ```
 
 ## Running on Kubernetes
 
 ```bash
-# build image inside minikube
+# build both images inside minikube
 eval $(minikube docker-env)
-docker build -t ml-api:latest .
+docker build -t ml-api:latest -f Dockerfile .
+docker build -t ml-worker:latest -f Dockerfile.worker .
 
 # enable metrics-server for HPA
 minikube addons enable metrics-server
 
-# deploy
+# deploy Redis first, then API and workers
+kubectl apply -f redis.yaml
 kubectl apply -f deployment.yaml
+kubectl apply -f worker-deployment.yaml
 kubectl apply -f service.yaml
 kubectl apply -f hpa.yaml
+kubectl apply -f hpa-worker.yaml
 
-# watch autoscaling in action
-kubectl get hpa ml-api-hpa --watch
+# watch both HPAs
+kubectl get hpa --watch
 
 # expose service locally
 kubectl port-forward service/ml-api-service 8001:80
 ```
 
-Then run the load test in the UI pointed at `http://localhost:8001` and watch pods scale up.
+Then run the load test in the UI pointed at `http://localhost:8001` and watch worker pods scale up as inference CPU climbs.
 
 ---
 
