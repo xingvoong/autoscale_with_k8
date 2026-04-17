@@ -55,45 +55,56 @@ The low CPU limit is intentional — it forces the HPA to trigger under load, de
 ## Architecture
 
 ```
-                        ┌────────────────────────────────────────┐
-                        │            Kubernetes Cluster           │
-                        │                                        │
-                        │   ┌──────────────────────────────┐    │
-  HTTP Request          │   │     NodePort Service :80      │    │
-─────────────────────►  │   └──────────────┬───────────────┘    │
-                        │                  │ load balances       │
-                        │        ┌─────────┼─────────┐          │
-                        │        ▼         ▼         ▼          │
-                        │   ┌────────┐ ┌────────┐ ┌────────┐   │
-                        │   │ Pod 1  │ │ Pod 2  │ │ Pod 3  │   │
-                        │   │ :8000  │ │ :8000  │ │ :8000  │   │
-                        │   │FastAPI │ │FastAPI │ │FastAPI │   │
-                        │   └───┬────┘ └────────┘ └────────┘   │
-                        │       │                               │
-                        │       │  each pod                     │
-                        │       ├─ /health   ← readiness probe  │
-                        │       └─ /predict  → ThreadPoolExecutor│
-                        │                       → DistilBERT    │
-                        │                                        │
-                        │   ┌──────────────┐  ┌─────────────┐  │
-                        │   │Metrics Server│  │     HPA     │  │
-                        │   │  (CPU usage) │─►│  1–5 pods   │  │
-                        │   └──────────────┘  └─────────────┘  │
-                        │                                        │
-                        └────────────────────────────────────────┘
+                   ┌─────────────────────────────────────────────────────┐
+                   │                  Kubernetes Cluster                  │
+                   │                                                      │
+  HTTP Request     │   ┌─────────────────────────────────────────────┐   │
+──────────────────►│   │           NodePort Service :80               │   │
+                   │   └──────────────────┬──────────────────────────┘   │
+                   │                      │ load balances                 │
+                   │           ┌──────────┼──────────┐                   │
+                   │           ▼          ▼          ▼                   │
+                   │      ┌─────────┐┌─────────┐┌─────────┐             │
+                   │      │  Pod 1  ││  Pod 2  ││  Pod 3  │  (each pod) │
+                   │      │  :8000  ││  :8000  ││  :8000  │             │
+                   │      │ FastAPI ││ FastAPI ││ FastAPI │             │
+                   │      └────┬────┘└────┬────┘└────┬────┘             │
+                   │           │          │          │                   │
+                   │           └──────────┼──────────┘                   │
+                   │                      │                               │
+                   │          ┌───────────┴────────────┐                 │
+                   │          │  /health  → 503 until   │                 │
+                   │          │           model loaded  │◄── readiness   │
+                   │          │                         │    + liveness  │
+                   │          │  /predict → ThreadPool  │    probes      │
+                   │          │            → DistilBERT │                │
+                   │          └─────────────────────────┘                │
+                   │                                                      │
+                   │   ┌────────────────┐         ┌────────────────┐    │
+                   │   │ Metrics Server │◄─queries─│      HPA       │    │
+                   │   │  (CPU / pod)   │          │  target: 100m  │    │
+                   │   └────────────────┘          │  (50% of 200m) │    │
+                   │                               └───────┬────────┘    │
+                   │                                       │ scale       │
+                   │                               ┌───────▼────────┐    │
+                   │                               │   Deployment   │    │
+                   │                               │   1 → 5 pods   │    │
+                   │                               └────────────────┘    │
+                   │                                                      │
+                   └─────────────────────────────────────────────────────┘
 ```
 
 **How a request flows:**
 1. Request hits the NodePort Service, which load balances across available pods
-2. Pod only receives traffic if `/health` returns 200 (model fully loaded)
-3. `/predict` offloads inference to a `ThreadPoolExecutor` — event loop stays free for other requests
-4. DistilBERT runs on CPU, returns `POSITIVE`/`NEGATIVE` + confidence score
+2. Each pod only receives traffic once `/health` returns 200 (model fully loaded, ~15s)
+3. `/predict` offloads inference to a `ThreadPoolExecutor` — event loop stays free for concurrent requests
+4. DistilBERT runs on CPU and returns `POSITIVE`/`NEGATIVE` + confidence score
 
 **How autoscaling works:**
-1. Metrics Server collects CPU usage from each pod every 15s
-2. HPA checks if average CPU > 50% of the 200m request
-3. If yes, HPA scales up (max 5 pods); if load drops, scales back down to 1
-4. New pods don't receive traffic until readiness probe passes (~15s warmup)
+1. Metrics Server collects CPU usage per pod every 15s
+2. HPA queries Metrics Server and checks if average CPU exceeds 100m (50% of the 200m request)
+3. If yes, HPA scales up the Deployment (max 5 pods); if load drops, scales back down to 1
+4. New pods don't receive traffic until their readiness probe passes (~15s warmup)
 
 ---
 
