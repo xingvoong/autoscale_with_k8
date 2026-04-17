@@ -55,17 +55,45 @@ The low CPU limit is intentional — it forces the HPA to trigger under load, de
 ## Architecture
 
 ```
-User Traffic → Kubernetes Service (NodePort)
-             → Pods (FastAPI, async inference via ThreadPoolExecutor)
-                  ↳ /health (readiness + liveness probe)
-             → Metrics Server (CPU utilization)
-             → HPA → scale 1–5 pods
+                        ┌────────────────────────────────────────┐
+                        │            Kubernetes Cluster           │
+                        │                                        │
+                        │   ┌──────────────────────────────┐    │
+  HTTP Request          │   │     NodePort Service :80      │    │
+─────────────────────►  │   └──────────────┬───────────────┘    │
+                        │                  │ load balances       │
+                        │        ┌─────────┼─────────┐          │
+                        │        ▼         ▼         ▼          │
+                        │   ┌────────┐ ┌────────┐ ┌────────┐   │
+                        │   │ Pod 1  │ │ Pod 2  │ │ Pod 3  │   │
+                        │   │ :8000  │ │ :8000  │ │ :8000  │   │
+                        │   │FastAPI │ │FastAPI │ │FastAPI │   │
+                        │   └───┬────┘ └────────┘ └────────┘   │
+                        │       │                               │
+                        │       │  each pod                     │
+                        │       ├─ /health   ← readiness probe  │
+                        │       └─ /predict  → ThreadPoolExecutor│
+                        │                       → DistilBERT    │
+                        │                                        │
+                        │   ┌──────────────┐  ┌─────────────┐  │
+                        │   │Metrics Server│  │     HPA     │  │
+                        │   │  (CPU usage) │─►│  1–5 pods   │  │
+                        │   └──────────────┘  └─────────────┘  │
+                        │                                        │
+                        └────────────────────────────────────────┘
 ```
 
-**Key design decisions:**
-- Inference runs in a `ThreadPoolExecutor` so the async event loop stays unblocked under concurrency
-- Model loads during FastAPI lifespan startup; `/health` returns 503 until ready, preventing traffic to cold pods
-- HPA targets 50% CPU — under load, new pods spin up and distribute requests, cutting p99 latency
+**How a request flows:**
+1. Request hits the NodePort Service, which load balances across available pods
+2. Pod only receives traffic if `/health` returns 200 (model fully loaded)
+3. `/predict` offloads inference to a `ThreadPoolExecutor` — event loop stays free for other requests
+4. DistilBERT runs on CPU, returns `POSITIVE`/`NEGATIVE` + confidence score
+
+**How autoscaling works:**
+1. Metrics Server collects CPU usage from each pod every 15s
+2. HPA checks if average CPU > 50% of the 200m request
+3. If yes, HPA scales up (max 5 pods); if load drops, scales back down to 1
+4. New pods don't receive traffic until readiness probe passes (~15s warmup)
 
 ---
 
