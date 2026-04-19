@@ -1,59 +1,65 @@
 # Kubernetes ML Inference + Autoscaling System
 
-A FastAPI sentiment analysis service deployed on Kubernetes with a decoupled API + worker architecture, Redis job queue, browser-based UI, load testing, and CPU-based autoscaling via Horizontal Pod Autoscaler (HPA).
+This project runs DistilBERT sentiment analysis on Kubernetes with a decoupled API and worker design, a Redis job queue, a browser-based UI, and CPU-based autoscaling via HPA. I built it to understand how ML inference systems work in a distributed environment — not just get the model running, but understand how it scales.
 
 ---
 
 ## What it does
 
-Runs DistilBERT sentiment analysis (`distilbert-base-uncased-finetuned-sst-2-english`) via a split API + worker design. The API server handles HTTP and queues jobs over Redis; separate worker pods load the model and process inference. Includes a built-in UI for predictions and load testing with configurable acceptance thresholds.
+The API handles HTTP requests and queues jobs to Redis. A separate worker picks up those jobs, runs them through DistilBERT, and returns the results. They scale independently. You can hit it with a single input or a batch of inputs — it handles both.
 
-**API:**
+**Endpoints:**
 - `GET /` — serves the UI
-- `GET /health` — readiness check, returns 503 if Redis is unreachable
+- `GET /health` — returns 503 if Redis is unreachable
 - `POST /predict` — accepts `{ "input": "<text>" }`, returns `{ "label": "POSITIVE"|"NEGATIVE", "score": 0.99 }`
 - `POST /batch` — accepts `{ "inputs": ["text1", "text2", ...] }`, returns array of `{ "label", "score" }` (30s timeout)
 
 **Stack:**
-- FastAPI + Uvicorn (async, no ML dependencies)
-- Separate ML worker: HuggingFace `transformers` + PyTorch for CPU inference
-- Redis as job queue and result store
-- Docker (`python:3.10-slim`), two images: `ml-api` and `ml-worker`
-- Kubernetes: API Deployment + Worker Deployment + Redis Deployment + NodePort Service + two HPAs
+- FastAPI + Uvicorn — async, no ML dependencies in the API
+- HuggingFace `transformers` + PyTorch (CPU) — lives only in the worker
+- Redis — job queue and result store
+- Two Docker images: `ml-api` and `ml-worker`
+- Kubernetes: API Deployment, Worker Deployment, Redis, NodePort Service, two HPAs
 
 ---
 
 ## UI
 
-Open `http://localhost:8000` after starting the server.
+Open `http://localhost:8000` when running locally, or `http://localhost:8001` when using Kubernetes port-forward.
 
-**Sentiment Prediction** — type text, get label + confidence score.
+There are three things you can do in the UI:
 
-**Load Test** — browser-based load generator (no k6 required):
-- Configurable VUs (virtual users), duration, per-request delay, and payload text
+**Sentiment Prediction** — type a sentence, get back a label and confidence score.
+
+**Batch Processing** — enter one sentence per line, get back results for all of them at once.
+
+**Load Test** — no k6 needed. Run it directly in the browser.
+- Set VUs (virtual users), duration, delay, and payload text
+- Switch between real-time mode (`/predict`) and batch mode (`/batch`) with configurable batch size
 - Live stats: total requests, peak req/sec, avg / p50 / p99 latency, error rate
 - Real-time throughput chart
-
-**Acceptance Thresholds** — set p50, p99, avg latency, and error rate limits. Saved to localStorage. After each load test, stat boxes turn green/red and a verdict shows ACCEPTED or NOT ACCEPTED with per-check deltas (e.g. `1.9× over limit`).
+- Set acceptance thresholds for p50, p99, avg latency, and error rate. After each test you get an ACCEPTED or NOT ACCEPTED verdict with per-check deltas
 
 ---
 
 ## Kubernetes setup
 
+Six manifest files. Each one does one thing.
+
 | File | Purpose |
 |---|---|
-| `deployment.yaml` | API deployment, 1 replica, CPU requests: 100m / limits: 250m, readiness + liveness probes |
-| `worker-deployment.yaml` | Worker deployment, 1 replica, CPU requests: 200m / limits: 500m, readiness probe |
+| `deployment.yaml` | API deployment — 1 replica, CPU requests: 100m / limits: 250m, readiness + liveness probes |
+| `worker-deployment.yaml` | Worker deployment — 1 replica, CPU requests: 200m / limits: 500m, readiness probe |
 | `redis.yaml` | Redis deployment + ClusterIP service (`redis-service:6379`) |
-| `service.yaml` | NodePort, port 80 → API container 8000 |
-| `hpa.yaml` | Scales API pods 1→5 at 50% CPU utilization |
-| `hpa-worker.yaml` | Scales worker pods 1→5 at 50% CPU utilization |
+| `service.yaml` | NodePort — port 80 → API container 8000 |
+| `hpa.yaml` | Scales API pods 1→5 at 50% CPU |
+| `hpa-worker.yaml` | Scales worker pods 1→2 at 50% CPU |
 
-The low CPU limits are intentional — they force the HPAs to trigger under load, demonstrating autoscaling behavior.
+The CPU limits are intentionally low. That's what makes the HPA trigger during load testing — it's easier to demonstrate autoscaling when the threshold is easy to hit.
 
 **Health probes:**
-- **API readiness** — pod only receives traffic once `/health` returns 200 (Redis reachable)
-- **API liveness** — pod is restarted if `/health` stops responding (catches hangs)
+- **API readiness** — pod only gets traffic once `/health` returns 200, meaning Redis is reachable
+- **API liveness** — pod restarts if `/health` stops responding
 - **Worker readiness** — exec probe pings Redis before the worker is considered ready
 
 ---
@@ -62,7 +68,7 @@ The low CPU limits are intentional — they force the HPAs to trigger under load
 
 ### Diagram 1 — POST /predict
 
-Single text in, single result out.
+One input in. One result out.
 
 ```
   ┌────────┐
@@ -99,7 +105,7 @@ Single text in, single result out.
 
 ### Diagram 2 — POST /batch
 
-Multiple texts in, one result array out. All inputs travel as a single job and are processed in one model call.
+Multiple inputs in. One result array out. All inputs go as a single job — the worker processes them in one model call.
 
 ```
   ┌────────┐
@@ -138,7 +144,7 @@ Multiple texts in, one result array out. All inputs travel as a single job and a
 
 ### Diagram 3 — Autoscaling
 
-Both HPAs watch CPU independently and scale their own deployment.
+The API HPA and Worker HPA watch CPU independently. They don't know about each other.
 
 ```
   ┌───────────────────────────────┐
@@ -159,7 +165,7 @@ Both HPAs watch CPU independently and scale their own deployment.
   ┌──────────────┐    ┌──────────────┐
   │     API      │    │    Worker    │
   │  Deployment  │    │  Deployment  │
-  │  1 → 5 pods  │    │  1 → 5 pods  │
+  │  1 → 5 pods  │    │  1 → 2 pods  │
   └──────────────┘    └──────────────┘
 
   API pods scale with connection count.
@@ -170,7 +176,7 @@ Both HPAs watch CPU independently and scale their own deployment.
 
 ### Diagram 4 — Full system
 
-All components together: ingress, API tier, queue, worker tier.
+How all the pieces fit together.
 
 ```
   ╔══════════════════════════════════════════════════════════════╗
@@ -206,11 +212,11 @@ All components together: ingress, API tier, queue, worker tier.
           ┌──────────────────┼──────────────────┐
           ▼                  ▼                  ▼
   ╔═══════════════════════════════════════════════════════════════╗
-  ║  WORKER TIER  (ml-worker · DistilBERT)     HPA: 1–5 pods    ║
-  ║  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐         ║
-  ║  │ Worker Pod  │  │ Worker Pod  │  │ Worker Pod  │         ║
-  ║  │ pre-loaded  │  │ pre-loaded  │  │ pre-loaded  │         ║
-  ║  └─────────────┘  └─────────────┘  └─────────────┘         ║
+  ║  WORKER TIER  (ml-worker · DistilBERT)     HPA: 1–2 pods    ║
+  ║  ┌─────────────┐  ┌─────────────┐                           ║
+  ║  │ Worker Pod  │  │ Worker Pod  │                           ║
+  ║  │ pre-loaded  │  │ pre-loaded  │                           ║
+  ║  └─────────────┘  └─────────────┘                           ║
   ╚═══════════════════════════════════════════════════════════════╝
 ```
 
@@ -218,11 +224,13 @@ All components together: ingress, API tier, queue, worker tier.
 
 ## Running locally
 
+You need three things running: Redis, the API, and the worker.
+
 ```bash
 # start Redis
 docker run -p 6379:6379 redis:7-alpine
 
-# terminal 1 — API server (no ML deps)
+# terminal 1 — API server
 pip install -r requirements-api.txt
 uvicorn app:app --host 0.0.0.0 --port 8000
 
@@ -257,13 +265,13 @@ kubectl get hpa --watch
 kubectl port-forward service/ml-api-service 8001:80
 ```
 
-Then run the load test in the UI pointed at `http://localhost:8001` and watch worker pods scale up as inference CPU climbs.
+Open `http://localhost:8001`, run the load test, and watch worker pods scale up as inference CPU climbs.
 
 ---
 
-## Acceptance thresholds (recommended)
+## Acceptance thresholds
 
-Thresholds are based on measured baselines (sequential load, 1 worker, CPU-only DistilBERT).
+These are based on real measurements — sequential load, one worker, CPU-only DistilBERT. Don't use made-up numbers as thresholds. Run the test first.
 
 ### POST /predict
 
@@ -276,7 +284,7 @@ Thresholds are based on measured baselines (sequential load, 1 worker, CPU-only 
 
 ### POST /batch (per-input latency — ms ÷ batch size)
 
-The UI load tester normalizes batch latency by batch size, so these thresholds are directly comparable to `/predict`.
+The UI normalizes batch latency by batch size so you can compare it directly to `/predict`. Batch is actually faster per input — the model processes all inputs in one forward pass, so the overhead is shared.
 
 | Batch size | p50 (measured) | p99 (measured) | Recommended p50 limit | Recommended p99 limit |
 |---|---|---|---|---|
@@ -284,7 +292,7 @@ The UI load tester normalizes batch latency by batch size, so these thresholds a
 | 10 | ~290ms | ~420ms | < 400ms | < 600ms |
 | 20 | ~310ms | ~1050ms | < 500ms | < 1500ms |
 
-Per-input latency is similar across batch sizes — DistilBERT processes all inputs in one forward pass so larger batches amortize the overhead well. p99 rises at bs=20 due to occasional queue wait behind a long-running job.
+p99 goes up at batch size 20 because of queue wait, not inference time. The model itself is fast — the job is just waiting behind another one.
 
 | Metric | Threshold |
 |---|---|
@@ -297,31 +305,31 @@ Per-input latency is similar across batch sizes — DistilBERT processes all inp
 
 ## Recap
 
-This project started as a monolithic FastAPI service that loaded DistilBERT directly in the API pod and ran inference synchronously. Over several iterations it was refactored into a production-closer design:
+I started with a monolithic FastAPI service that loaded DistilBERT directly in the API pod and ran inference synchronously. Over several iterations I refactored it into something that looks closer to how you'd actually build this in production.
 
-**What was built, in order:**
-1. FastAPI sentiment analysis API with DistilBERT (monolith)
+**What I built, in order:**
+1. FastAPI sentiment analysis API with DistilBERT — monolith to start
 2. Browser-based UI with load testing and acceptance thresholds
 3. Async inference via `ThreadPoolExecutor` so the event loop stayed free
-4. Health probes (readiness + liveness) so Kubernetes knew when pods were ready
+4. Health probes so Kubernetes knew when pods were actually ready
 5. HPA to scale pods on CPU under load
-6. Split into API + worker — model moved out of the API into a separate worker image
+6. Split into API + worker — moved the model out of the API into its own image
 7. Redis job queue connecting the two: API enqueues, worker dequeues and responds
-8. `POST /batch` endpoint for multi-input inference in a single round-trip
-9. Measured batch latency baselines and set acceptance thresholds from real data
+8. `POST /batch` for multi-input inference in a single round-trip
+9. Measured actual latency baselines and set thresholds from real data
 
 ---
 
 ## Key takeaways
 
-**Don't put things together that scale differently.** The API handles connections. The worker handles inference. They have different bottlenecks and different scaling needs. If you keep them in the same pod, you scale both when you only need to scale one. Separate them.
+**Don't put things together that scale differently.** The API handles connections. The worker handles inference. They have different bottlenecks. If you keep them in the same pod, you scale both when you only need to scale one. Separate them.
 
-**A queue is what lets two services run at their own speed.** The API doesn't wait for the worker. It drops the job and moves on. The worker picks it up when it's ready. If the worker restarts, the job is still there. That's the whole point of a queue.
+**A queue is what lets two services run at their own speed.** The API doesn't wait for the worker. It drops the job and moves on. The worker picks it up when it's ready. If the worker restarts, the job is still in the queue. That's the point.
 
-**Batch when you can.** If you already have multiple inputs, send them together. One model call over ten inputs is faster per input than ten separate calls. You pay the network and queue cost once, not ten times.
+**Batch when you can.** If you have multiple inputs ready at the same time, send them together. One model call over ten inputs is faster per input than ten separate calls. You pay the network and queue cost once, not ten times.
 
 **Real-time is for users. Batch is for work.** If someone is waiting on a screen, use `/predict`. If you're processing a list, use `/batch`. Same infrastructure, different timeout budget.
 
-**Don't guess at latency. Measure it.** Batch per-input latency in this project (~290ms) was faster than single requests (~650ms avg). Most people would assume the opposite. Set your thresholds after you run the tests, not before.
+**Don't guess at latency. Measure it.** Batch per-input latency in this project (~290ms) was faster than single requests (~650ms avg). I didn't expect that. Set your thresholds after you run the tests, not before.
 
-**A pod that is starting is not ready.** Kubernetes will send traffic to it the moment it starts unless you configure a readiness probe. For any service that takes time to load — model weights, cache, DB connections — a readiness probe is not optional. Without it, you get errors on every deploy.
+**A pod that is starting is not ready.** Kubernetes will send traffic to it the moment it starts unless you configure a readiness probe. For any service that takes time to load — model weights, cache, DB connections — that probe is not optional. Without it, you get errors on every deploy.
