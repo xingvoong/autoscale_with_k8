@@ -314,14 +314,14 @@ This project started as a monolithic FastAPI service that loaded DistilBERT dire
 
 ## Key takeaways
 
-**Decouple what scales differently.** The API scales with connections; the worker scales with inference load. Putting them in the same process means you can only scale both together — you end up over-provisioning whichever is not the bottleneck. Separate them so each can scale independently.
+**Scale each component for its own bottleneck.** The API is bottlenecked by connections; the worker is bottlenecked by inference. Keeping them in the same process forces you to scale both for the worst case — you end up with too many model replicas or too few API handlers. Split them and scale each independently.
 
-**A queue decouples producers from consumers.** The API doesn't need to know how many workers exist or where they are. Workers don't need to know who submitted the job. The queue absorbs the difference in speed between the two sides and makes the system resilient to worker restarts without dropping requests.
+**A job queue lets the API and worker run at different speeds.** Without a queue, the API has to wait for a worker to be free before it can accept the next request. With a queue, the API just drops the job in and moves on — the worker drains at its own pace. This also means worker restarts don't drop in-flight requests; the job stays in the queue until a worker picks it up.
 
-**Batch processing is more efficient per input than single requests.** One model forward pass over N inputs costs less than N individual forward passes. Redis round-trip and serialization overhead is paid once per job regardless of batch size. If you have multiple inputs ready at the same time, batching them is almost always the right call.
+**If you have multiple inputs ready at the same time, send them together.** A single model forward pass over N inputs costs less than N separate calls. Network overhead, serialization, and queue round-trips are all paid once per job regardless of how many inputs are in it. Batching is almost always the right default when inputs are already available.
 
-**Use real-time when latency matters, batch when throughput matters.** Real-time is for users waiting on a screen. Batch is for pipelines, bulk jobs, or any case where inputs are already grouped. The same model and infrastructure can serve both — they just need different endpoints and timeout budgets.
+**Real-time is for users waiting, batch is for work that can be grouped.** The difference is not the model or the infrastructure — it's the timeout budget and who is on the other end. A user clicking a button needs a response in under a second. A pipeline processing a thousand records can wait.
 
-**Measure before setting SLOs.** Intuition about latency is usually wrong. In this project, batch per-input latency (~290ms) turned out to be faster than single-request latency (~650ms avg) — the opposite of what most people would guess. Run real load tests against real infrastructure before committing to thresholds.
+**Measure before committing to latency targets.** In this project, batch per-input latency (~290ms) was faster than single-request latency (~650ms avg) — the opposite of what most people would expect. Load test against real infrastructure before writing SLOs into any contract or alerting rule.
 
-**Readiness probes are not optional for slow-starting services.** A pod that starts accepting traffic before the model is loaded will return errors for every request during warmup. Readiness probes gate traffic until the service is actually ready — without them, Kubernetes will route requests into a black hole on every deploy or scale-up.
+**A pod that is starting is not the same as a pod that is ready.** Kubernetes will route traffic to a pod the moment it starts unless you tell it not to. For any service with a slow startup — model loading, cache warming, database connections — a readiness probe is the difference between clean deploys and a wave of errors on every rollout.
