@@ -314,14 +314,14 @@ This project started as a monolithic FastAPI service that loaded DistilBERT dire
 
 ## Key takeaways
 
-**Decouple what scales differently.** The API scales with connections (lightweight, fast to start). The worker scales with inference load (heavy, slow to start). Putting them in the same pod means you can only scale both together — wasteful and slow.
+**Decouple what scales differently.** The API scales with connections; the worker scales with inference load. Putting them in the same process means you can only scale both together — you end up over-provisioning whichever is not the bottleneck. Separate them so each can scale independently.
 
-**Redis as a job queue is simple and effective.** `rpush` / `blpop` gives you a work queue in a handful of lines. Job isolation via UUID keys means any API pod can submit and any worker pod can process — no routing needed.
+**A queue decouples producers from consumers.** The API doesn't need to know how many workers exist or where they are. Workers don't need to know who submitted the job. The queue absorbs the difference in speed between the two sides and makes the system resilient to worker restarts without dropping requests.
 
-**Batch processing is more efficient per input than single requests.** Measured per-input latency for batch was ~290ms vs ~650ms avg for `/predict`. The model forward pass cost is spread across all inputs; Redis and network overhead is paid once per job regardless of batch size.
+**Batch processing is more efficient per input than single requests.** One model forward pass over N inputs costs less than N individual forward passes. Redis round-trip and serialization overhead is paid once per job regardless of batch size. If you have multiple inputs ready at the same time, batching them is almost always the right call.
 
-**CPU-only torch matters on memory-constrained nodes.** The default `torch` pip package pulls in 1.3GB of CUDA runtime libraries even on a CPU-only deployment. Pinning `torch==2.4.1+cpu` from the PyTorch CPU index cut the worker image weight significantly and dropped node memory usage from 81% to 36%.
+**Use real-time when latency matters, batch when throughput matters.** Real-time is for users waiting on a screen. Batch is for pipelines, bulk jobs, or any case where inputs are already grouped. The same model and infrastructure can serve both — they just need different endpoints and timeout budgets.
 
-**Match HPA max replicas to available memory.** Each DistilBERT worker loads ~400MB of model weights. On a 2GB node, maxReplicas: 5 caused OOM and killed the API server. Setting maxReplicas: 2 kept the node stable. In production, size your nodes to your replica budget, not the other way around.
+**Measure before setting SLOs.** Intuition about latency is usually wrong. In this project, batch per-input latency (~290ms) turned out to be faster than single-request latency (~650ms avg) — the opposite of what most people would guess. Run real load tests against real infrastructure before committing to thresholds.
 
-**Measure before setting thresholds.** The initial thresholds were guesses. Running a real load test revealed that batch p50 latency per input (~290ms) is actually better than single-request p50 (~310ms), and that p99 grows meaningfully at batch size 20 due to queue wait — not inference time.
+**Readiness probes are not optional for slow-starting services.** A pod that starts accepting traffic before the model is loaded will return errors for every request during warmup. Readiness probes gate traffic until the service is actually ready — without them, Kubernetes will route requests into a black hole on every deploy or scale-up.
