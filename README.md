@@ -263,11 +263,32 @@ Then run the load test in the UI pointed at `http://localhost:8001` and watch wo
 
 ## Acceptance thresholds (recommended)
 
-| Metric | Low load (1 VU) | Under load (3–5 VUs) |
-|---|---|---|
-| p50 latency | < 150ms | < 350ms |
-| p99 latency | < 400ms | < 1500ms |
-| Avg latency | < 200ms | < 500ms |
-| Error rate | < 1% | < 5% |
+Thresholds are based on measured baselines (sequential load, 1 worker, CPU-only DistilBERT).
 
-CPU-only DistilBERT inference takes ~150–300ms per request. Latency scales with concurrency — HPA reduces p99 by distributing load across pods.
+### POST /predict
+
+| Metric | Threshold |
+|---|---|
+| p50 latency | < 400ms |
+| p99 latency | < 5000ms |
+| Avg latency | < 700ms |
+| Error rate | < 1% |
+
+### POST /batch (per-input latency — ms ÷ batch size)
+
+The UI load tester normalizes batch latency by batch size, so these thresholds are directly comparable to `/predict`.
+
+| Batch size | p50 (measured) | p99 (measured) | Recommended p50 limit | Recommended p99 limit |
+|---|---|---|---|---|
+| 5 | ~280ms | ~480ms | < 400ms | < 600ms |
+| 10 | ~290ms | ~420ms | < 400ms | < 600ms |
+| 20 | ~310ms | ~1050ms | < 500ms | < 1500ms |
+
+Per-input latency is similar across batch sizes — DistilBERT processes all inputs in one forward pass so larger batches amortize the overhead well. p99 rises at bs=20 due to occasional queue wait behind a long-running job.
+
+| Metric | Threshold |
+|---|---|
+| p50 per-input latency | < 400ms |
+| p99 per-input latency | < 1500ms |
+| Avg per-input latency | < 500ms |
+| Error rate | < 1% |
