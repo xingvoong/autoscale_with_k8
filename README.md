@@ -314,14 +314,14 @@ This project started as a monolithic FastAPI service that loaded DistilBERT dire
 
 ## Key takeaways
 
-**Scale each component for its own bottleneck.** The API is bottlenecked by connections; the worker is bottlenecked by inference. Keeping them in the same process forces you to scale both for the worst case — you end up with too many model replicas or too few API handlers. Split them and scale each independently.
+**Don't put things together that scale differently.** The API handles connections. The worker handles inference. They have different bottlenecks and different scaling needs. If you keep them in the same pod, you scale both when you only need to scale one. Separate them.
 
-**A job queue lets the API and worker run at different speeds.** Without a queue, the API has to wait for a worker to be free before it can accept the next request. With a queue, the API just drops the job in and moves on — the worker drains at its own pace. This also means worker restarts don't drop in-flight requests; the job stays in the queue until a worker picks it up.
+**A queue is what lets two services run at their own speed.** The API doesn't wait for the worker. It drops the job and moves on. The worker picks it up when it's ready. If the worker restarts, the job is still there. That's the whole point of a queue.
 
-**If you have multiple inputs ready at the same time, send them together.** A single model forward pass over N inputs costs less than N separate calls. Network overhead, serialization, and queue round-trips are all paid once per job regardless of how many inputs are in it. Batching is almost always the right default when inputs are already available.
+**Batch when you can.** If you already have multiple inputs, send them together. One model call over ten inputs is faster per input than ten separate calls. You pay the network and queue cost once, not ten times.
 
-**Real-time is for users waiting, batch is for work that can be grouped.** The difference is not the model or the infrastructure — it's the timeout budget and who is on the other end. A user clicking a button needs a response in under a second. A pipeline processing a thousand records can wait.
+**Real-time is for users. Batch is for work.** If someone is waiting on a screen, use `/predict`. If you're processing a list, use `/batch`. Same infrastructure, different timeout budget.
 
-**Measure before committing to latency targets.** In this project, batch per-input latency (~290ms) was faster than single-request latency (~650ms avg) — the opposite of what most people would expect. Load test against real infrastructure before writing SLOs into any contract or alerting rule.
+**Don't guess at latency. Measure it.** Batch per-input latency in this project (~290ms) was faster than single requests (~650ms avg). Most people would assume the opposite. Set your thresholds after you run the tests, not before.
 
-**A pod that is starting is not the same as a pod that is ready.** Kubernetes will route traffic to a pod the moment it starts unless you tell it not to. For any service with a slow startup — model loading, cache warming, database connections — a readiness probe is the difference between clean deploys and a wave of errors on every rollout.
+**A pod that is starting is not ready.** Kubernetes will send traffic to it the moment it starts unless you configure a readiness probe. For any service that takes time to load — model weights, cache, DB connections — a readiness probe is not optional. Without it, you get errors on every deploy.
