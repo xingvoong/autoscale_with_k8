@@ -292,3 +292,36 @@ Per-input latency is similar across batch sizes — DistilBERT processes all inp
 | p99 per-input latency | < 1500ms |
 | Avg per-input latency | < 500ms |
 | Error rate | < 1% |
+
+---
+
+## Recap
+
+This project started as a monolithic FastAPI service that loaded DistilBERT directly in the API pod and ran inference synchronously. Over several iterations it was refactored into a production-closer design:
+
+**What was built, in order:**
+1. FastAPI sentiment analysis API with DistilBERT (monolith)
+2. Browser-based UI with load testing and acceptance thresholds
+3. Async inference via `ThreadPoolExecutor` so the event loop stayed free
+4. Health probes (readiness + liveness) so Kubernetes knew when pods were ready
+5. HPA to scale pods on CPU under load
+6. Split into API + worker — model moved out of the API into a separate worker image
+7. Redis job queue connecting the two: API enqueues, worker dequeues and responds
+8. `POST /batch` endpoint for multi-input inference in a single round-trip
+9. Measured batch latency baselines and set acceptance thresholds from real data
+
+---
+
+## Key takeaways
+
+**Decouple what scales differently.** The API scales with connections (lightweight, fast to start). The worker scales with inference load (heavy, slow to start). Putting them in the same pod means you can only scale both together — wasteful and slow.
+
+**Redis as a job queue is simple and effective.** `rpush` / `blpop` gives you a work queue in a handful of lines. Job isolation via UUID keys means any API pod can submit and any worker pod can process — no routing needed.
+
+**Batch processing is more efficient per input than single requests.** Measured per-input latency for batch was ~290ms vs ~650ms avg for `/predict`. The model forward pass cost is spread across all inputs; Redis and network overhead is paid once per job regardless of batch size.
+
+**CPU-only torch matters on memory-constrained nodes.** The default `torch` pip package pulls in 1.3GB of CUDA runtime libraries even on a CPU-only deployment. Pinning `torch==2.4.1+cpu` from the PyTorch CPU index cut the worker image weight significantly and dropped node memory usage from 81% to 36%.
+
+**Match HPA max replicas to available memory.** Each DistilBERT worker loads ~400MB of model weights. On a 2GB node, maxReplicas: 5 caused OOM and killed the API server. Setting maxReplicas: 2 kept the node stable. In production, size your nodes to your replica budget, not the other way around.
+
+**Measure before setting thresholds.** The initial thresholds were guesses. Running a real load test revealed that batch p50 latency per input (~290ms) is actually better than single-request p50 (~310ms), and that p99 grows meaningfully at batch size 20 due to queue wait — not inference time.
