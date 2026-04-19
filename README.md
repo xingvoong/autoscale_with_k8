@@ -2,6 +2,13 @@
 
 Production-ready sentiment analysis service built on Kubernetes. Decoupled API and worker architecture, Redis job queue, CPU-based autoscaling via HPA, and a browser-based UI with built-in load testing.
 
+**This covers the serving layer of an ML system** — taking a trained model and running it reliably under real traffic. Specifically:
+- Model serving — exposing DistilBERT as a REST API
+- Inference infrastructure — job queue, workers, and autoscaling
+- Deployment — containerized on Kubernetes with health probes and HPA
+
+It assumes the model is already trained. Data collection, training, experimentation, and monitoring are out of scope.
+
 ---
 
 ## What it does
