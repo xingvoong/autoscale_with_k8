@@ -1,12 +1,12 @@
 # Kubernetes ML Inference + Autoscaling System
 
-This project runs DistilBERT sentiment analysis on Kubernetes with a decoupled API and worker design, a Redis job queue, a browser-based UI, and CPU-based autoscaling via HPA. I built it to understand how ML inference systems work in a distributed environment — not just get the model running, but understand how it scales.
+Production-ready sentiment analysis service built on Kubernetes. Decoupled API and worker architecture, Redis job queue, CPU-based autoscaling via HPA, and a browser-based UI with built-in load testing.
 
 ---
 
 ## What it does
 
-The API handles HTTP requests and queues jobs to Redis. A separate worker picks up those jobs, runs them through DistilBERT, and returns the results. They scale independently. You can hit it with a single input or a batch of inputs — it handles both.
+The API handles HTTP and queues inference jobs to Redis. A separate worker picks up those jobs, runs them through DistilBERT, and writes results back. The two services scale independently. Supports single-input and batch inference.
 
 **Endpoints:**
 - `GET /` — serves the UI
@@ -305,18 +305,16 @@ p99 goes up at batch size 20 because of queue wait, not inference time. The mode
 
 ## Recap
 
-I started with a monolithic FastAPI service that loaded DistilBERT directly in the API pod and ran inference synchronously. Over several iterations I refactored it into something that looks closer to how you'd actually build this in production.
-
-**What I built, in order:**
-1. FastAPI sentiment analysis API with DistilBERT — monolith to start
+**What was built:**
+1. FastAPI sentiment analysis API with DistilBERT
 2. Browser-based UI with load testing and acceptance thresholds
-3. Async inference via `ThreadPoolExecutor` so the event loop stayed free
-4. Health probes so Kubernetes knew when pods were actually ready
+3. Async inference via `ThreadPoolExecutor` to keep the event loop free
+4. Health probes so Kubernetes only routes traffic to ready pods
 5. HPA to scale pods on CPU under load
-6. Split into API + worker — moved the model out of the API into its own image
-7. Redis job queue connecting the two: API enqueues, worker dequeues and responds
+6. Decoupled API and worker — model inference moved into its own image
+7. Redis job queue: API enqueues, worker dequeues and responds
 8. `POST /batch` for multi-input inference in a single round-trip
-9. Measured actual latency baselines and set thresholds from real data
+9. Measured latency baselines and set thresholds from real data
 
 ---
 
@@ -330,6 +328,6 @@ I started with a monolithic FastAPI service that loaded DistilBERT directly in t
 
 **Real-time is for users. Batch is for work.** If someone is waiting on a screen, use `/predict`. If you're processing a list, use `/batch`. Same infrastructure, different timeout budget.
 
-**Don't guess at latency. Measure it.** Batch per-input latency in this project (~290ms) was faster than single requests (~650ms avg). I didn't expect that. Set your thresholds after you run the tests, not before.
+**Don't guess at latency. Measure it.** Batch per-input latency (~290ms) was faster than single requests (~650ms avg). Set your thresholds after you run the tests, not before.
 
 **A pod that is starting is not ready.** Kubernetes will send traffic to it the moment it starts unless you configure a readiness probe. For any service that takes time to load — model weights, cache, DB connections — that probe is not optional. Without it, you get errors on every deploy.
