@@ -229,6 +229,88 @@ How all the pieces fit together.
 
 ---
 
+## Distributed systems principles — where they show up
+
+```
+  Principle         Status       Where in the project
+  ──────────────────────────────────────────────────────────────────
+  CAP theorem       ✓            CP — 503 on Redis failure, not stale data
+  Consistency       ✓            Strong — Redis single-node, read = latest write
+  Fault tolerance   ~            Health probes work. Crash and timing failures don't.
+  Replication       ✗            Single Redis. Single worker. No durability.
+  Partitioning      ~            By concern (API vs worker). Not by data.
+  Consensus         ✗            Not needed yet. Single Redis, no leader election.
+  Idempotency       ~            Accidental — inference is idempotent by nature.
+  Backpressure      ✗            Queue grows unbounded. No 429, no limit.
+  Observability     ✗            No metrics, no traces, no structured logs.
+```
+
+### What's implemented
+
+**CAP — CP.** Redis goes down → `/health` returns 503 → Kubernetes marks pods unready → no traffic routed. The system refuses rather than serves stale data.
+
+**Strong consistency.** Redis operations are atomic. `rpush` and `blpop` on the same list are serialized. No two workers pop the same job. Result written by worker is immediately visible to the API's `blpop`.
+
+### What's partial
+
+**Fault tolerance — crash handled at infra level, not app level.**
+
+```
+  What works:
+  Pod crashes  ──▶  Kubernetes restarts it  ──▶  readiness probe gates traffic
+
+  What doesn't:
+  Worker crashes mid-job  ──▶  job is gone
+  Worker is slow          ──▶  connections pile up, no circuit breaker
+```
+
+**Partitioning — by concern, not by data.**
+
+```
+  API tier    ──  handles HTTP, no ML                (concern partition)
+  Worker tier ──  handles inference, no HTTP         (concern partition)
+
+  Missing:
+  Data partition  ──  single Redis, single shard, no horizontal data split
+```
+
+**Idempotency — accidental, not designed.** Same text in, same label out. The model is deterministic so running the same job twice is safe. But the system doesn't track job_ids to detect duplicates or skip reprocessing on replay.
+
+### What's missing
+
+**Replication — single points of failure everywhere.**
+
+```
+  Redis:   one instance. Dies → queue gone, results gone.
+  Worker:  scales to 2 for throughput, not durability.
+```
+
+**Backpressure — unbounded queue.**
+
+```
+  Load spike: 10,000 requests/minute
+  Worker capacity: 60 requests/minute
+
+  ml:jobs grows to 10,000 entries
+  No signal to clients to slow down
+  Eventually: OOM or multi-hour queue drain
+```
+
+Fix: check queue depth before enqueuing. Return 429 if depth exceeds threshold.
+
+**Observability — flying blind.**
+
+```
+  Can't answer:
+  - What's the current queue depth?
+  - What's p99 latency under load?
+  - Which requests timed out and why?
+```
+
+Fix: expose queue depth as a metric, instrument endpoints with latency histograms, add structured logs with job_id on every worker event.
+
+---
+
 ## Running locally
 
 You need three things running: Redis, the API, and the worker.
