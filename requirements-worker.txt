@@ -2,4 +2,5 @@
 torch==2.4.1+cpu
 transformers
 redis
+confluent-kafka
 numpy<2

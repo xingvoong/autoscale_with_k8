@@ -107,26 +107,30 @@ Fix: expose queue depth as a metric, instrument every endpoint with latency hist
 
 ### Phase 1 — Replace Redis queue with Kafka
 
-The problem with Redis: `blpop` removes the job the moment it's popped. If the worker crashes before writing the result, the job is gone. No replay, no acknowledgment, no durability. Redis is also single-node — it goes down, the entire queue is wiped.
+The problem with Redis: `blpop` removes the job the moment the worker pops it. If the worker crashes before writing the result, the job is gone. The API times out, the client gets a 504, and there's no way to recover.
 
-Kafka fixes this. Jobs live in a topic and are only considered done when the worker commits its offset. Crash before the commit = job replayed on restart. Kafka is also replicated by default, so a node going down doesn't lose data.
+Kafka keeps the job in the topic until the worker says it's done. That's the offset commit. The worker reads the job, runs inference, writes the result to Redis, then commits. Crash before the commit — job gets redelivered on restart.
 
 ```
-  Before:
-  API  ──rpush──▶  Redis LIST  ──blpop──▶  Worker
+Before:
+┌─────┐        ┌───────┐        ┌────────┐
+│ API │─rpush─▶│ Redis │─blpop─▶│ Worker │
+└─────┘        └───────┘        └────────┘
+               │
+               └──▶ ❌ JOB GONE ON POP
 
-  After:
-  API  ──produce──▶  Kafka Topic: ml.jobs  ──consume──▶  Worker
-                          │
-                    partition 0: [job] [job] [job]
-                    partition 1: [job] [job]
-                    partition 2: [job]
-                          │
-                    consumer group: ml-workers
-                    offset committed after result written
+After:
+┌─────┐          ┌───────┐          ┌────────┐
+│ API │─produce─▶│ Kafka │─consume─▶│ Worker │
+└─────┘          └───────┘          └────────┘
+                     │                   │
+                     │              write result
+                     │              commit offset
+                     │                   │
+               ✅ JOB STAYS    ✅ JOB DONE HERE
 ```
 
-This is the highest-leverage change. It closes job loss on crash, adds replication, enables parallel consumers via partitions, and forces explicit idempotency with job_id dedup.
+**Status: done.** Tested locally with Kafka in Docker. Sent a request, got back a result. The offset commit is the last line in the worker loop.
 
 ---
 

@@ -7,9 +7,12 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 import redis.asyncio as aioredis
+from confluent_kafka import Producer
 
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
+KAFKA_BROKER = os.getenv("KAFKA_BROKER", "localhost:9092")
 redis_client = None
+producer = Producer({"bootstrap.servers": KAFKA_BROKER})
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -42,7 +45,8 @@ def index():
 async def predict(data: InputData):
     job_id = str(uuid.uuid4())
     job = {"job_id": job_id, "inputs": [data.input]}
-    await redis_client.rpush("ml:jobs", json.dumps(job))
+    producer.produce("ml.jobs", json.dumps(job))
+    producer.flush()
     result = await redis_client.blpop(f"ml:result:{job_id}", timeout=10)
     if not result:
         raise HTTPException(status_code=504, detail="inference timeout")
@@ -52,7 +56,8 @@ async def predict(data: InputData):
 async def batch_predict(data: BatchInputData):
     job_id = str(uuid.uuid4())
     job = {"job_id": job_id, "inputs": data.inputs}
-    await redis_client.rpush("ml:jobs", json.dumps(job))
+    producer.produce("ml.jobs", json.dumps(job))
+    producer.flush()
     result = await redis_client.blpop(f"ml:result:{job_id}", timeout=30)
     if not result:
         raise HTTPException(status_code=504, detail="inference timeout")
