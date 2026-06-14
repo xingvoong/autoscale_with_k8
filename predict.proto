@@ -1,0 +1,14 @@
+syntax = "proto3";
+
+service Predictor {
+  rpc Predict (PredictRequest) returns (PredictResponse);
+}
+
+message PredictRequest {
+  string input = 1;
+}
+
+message PredictResponse {
+  string label = 1;
+  float score = 2;
+}

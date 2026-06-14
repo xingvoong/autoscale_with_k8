@@ -141,11 +141,37 @@ The problem with REST for internal services: it's text-based, untyped, and has n
 gRPC uses protobuf — a binary, typed schema both sides compile against. The contract is enforced at build time, not at 2am when a field name changes.
 
 ```
-  browser / curl     ──▶  REST  ──▶  API  ──▶  queue  ──▶  Worker
-  internal service   ──▶  gRPC  ──▶  API  ──▶  queue  ──▶  Worker
+REST (humans/external):
+┌────────┐          ┌─────────┐
+│ client │─── HTTP ─▶│ app.py  │
+└────────┘          └────┬────┘
+                         │
+gRPC (internal services):
+┌────────┐          ┌───────────────┐
+│ client │─── gRPC ─▶│ grpc_server  │
+└────────┘          └────┬──────────┘
+                         │
+                    produce to Kafka
+                         │
+                    ┌─────────┐
+                    │  Kafka  │
+                    └────┬────┘
+                         │
+                    ┌─────────┐
+                    │ Worker  │
+                    └────┬────┘
+                         │
+                    write result
+                    commit offset
+                         │
+                    ┌─────────┐
+                    │  Redis  │
+                    └─────────┘
 ```
 
-The backend doesn't change. Same queue, same workers. You're adding a second front door for internal callers who need typed contracts and lower overhead. REST stays for humans and external clients.
+The backend doesn't change. Same Kafka topic, same worker. You're adding a second front door for internal callers who need typed contracts and lower overhead. REST stays for humans and external clients.
+
+**Status: done.** `predict.proto` defines the contract. `grpc_server.py` runs on port 50051. Same Kafka producer and Redis result retrieval as `app.py`.
 
 ---
 
