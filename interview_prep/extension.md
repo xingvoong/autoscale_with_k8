@@ -203,21 +203,38 @@ Worker latency no longer affects API availability. A slow worker just means the 
 
 The problem with CPU as the autoscale signal: it's lagging. A worker between jobs shows low CPU even if there are 500 jobs waiting. The HPA sees "looks fine" and does nothing. The queue keeps growing.
 
-```
-  Current:
-  CPU usage    ──▶  autoscaler  ──▶  Worker replicas
+Why we need to scale: one worker can only process so many jobs at a time. If 500 jobs arrive and you have 1 worker doing 60 jobs/minute — the queue grows faster than it drains. Clients wait longer and longer. Eventually timeouts, 504s, backed-up queue. Scale to 5 workers — now you're doing 300 jobs/minute. Queue drains. Latency drops.
 
-  500 jobs in queue, worker CPU: 20%  →  HPA does nothing
-```
+The point of KEDA is to scale before it gets bad. CPU scales after the worker is already struggling. Queue depth scales the moment jobs start piling up — before CPU even has a chance to spike.
 
-Queue depth is a leading indicator. If there are 500 jobs and 1 worker, scale now — before CPU spikes, before latency climbs.
+KEDA is Kubernetes Event-Driven Autoscaler. The built-in HPA only knows about CPU and memory. KEDA extends that to external metrics — Kafka consumer lag, Redis queue length, or any custom metric that actually reflects your workload.
 
 ```
-  After:
-  Queue depth  ──▶  autoscaler  ──▶  Worker replicas
+Before (CPU-based HPA):
+
+┌───────┐        ┌────────┐        ┌─────┐
+│ Kafka │        │ Worker │─CPU %─▶│ HPA │
+└───────┘        └────────┘        └──┬──┘
+    │                                  │
+    │  500 jobs waiting                │ "CPU 20%, looks fine"
+    │                                  │
+    └──────────────────────────────────▶ ❌ NO SCALE
+
+
+After (KEDA + queue depth):
+
+┌───────┐  lag   ┌──────┐  replicas  ┌────────┐
+│ Kafka │───────▶│ KEDA │───────────▶│ Worker │
+└───────┘        └──────┘            └────────┘
+    │
+    │  5+ jobs waiting
+    │
+    └──▶ ✅ SCALE NOW
 ```
 
-Tool: KEDA (Kubernetes Event-Driven Autoscaler). It reads Kafka consumer lag directly and scales workers based on how far behind they are.
+Tool: KEDA reads Kafka consumer lag directly and scales workers based on how far behind they are. Configured via `keda-worker-scaler.yaml` — `lagThreshold: "5"` means scale up when more than 5 jobs are waiting.
+
+**Status: done.** KEDA installed in cluster. `keda-worker-scaler.yaml` created with `lagThreshold: 5` and `maxReplicaCount: 5`.
 
 ---
 
