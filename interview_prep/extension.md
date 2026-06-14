@@ -175,30 +175,6 @@ The backend doesn't change. Same Kafka topic, same worker. You're adding a secon
 
 ---
 
-### Phase 3 — Async result retrieval
-
-The problem: every in-flight request holds a connection open while it waits. Under load, that becomes a resource exhaustion problem — not a worker problem.
-
-```
-  Current:
-  POST /predict  ──▶  [holds connection 10s]  ──▶  result
-
-  100 slow workers × 100 concurrent clients = connection pool gone
-```
-
-The fix is to decouple request acceptance from result delivery. Return a job_id immediately, let the client poll.
-
-```
-  After:
-  POST /predict  ──▶  { "job_id": "abc-123" }   (instant)
-  GET /result/abc-123  ──▶  202 pending
-  GET /result/abc-123  ──▶  200 + result
-```
-
-Worker latency no longer affects API availability. A slow worker just means the client polls a few more times — not that the API runs out of connections.
-
----
-
 ### Phase 4 — Scale on queue depth
 
 The problem with CPU as the autoscale signal: it's lagging. A worker between jobs shows low CPU even if there are 500 jobs waiting. The HPA sees "looks fine" and does nothing. The queue keeps growing.
@@ -251,3 +227,60 @@ Tool: KEDA reads Kafka consumer lag directly and scales workers based on how far
   Partitioning               Phase 1 (Kafka partitions = parallel consumers)
   Consensus                  N/A — Kafka handles it internally
 ```
+
+---
+
+## Summary
+
+Phase 1 and Phase 4 are what matter for distributed systems.
+
+Phase 1 swapped Redis for Kafka. The problem: Redis deletes the job the moment the worker picks it up. If the worker crashes, the job is gone. Kafka keeps the job until the worker says it's done. That's the offset commit — the worker's way of saying "I'm done, mark this job as processed."
+
+Phase 4 swapped CPU autoscaling for queue depth via KEDA. CPU tells you the worker is already struggling. Queue depth tells you jobs are piling up right now. Scale earlier, not after the damage is done.
+
+---
+
+## Improvements and trade-offs
+
+- **Backpressure** — we can see queue depth but we don't reject requests yet. Under a big spike, the queue still grows without limit. Fix: return 429 (too many requests) when queue depth is too high. The client backs off and retries later instead of making things worse.
+
+- **Kafka is more complex than Redis** — you have a broker to run, partitions to manage, and consumers that can rebalance. Worth it for durability, but not free. We're running single node locally — one broker goes down, queue is gone. Production needs at least 3 brokers with replication.
+
+```
+                    Single node (what we have):
+
+                        ┌─────────┐
+                        │  Kafka  │
+                        └────┬────┘
+                             │
+                    ┌────────▼────────┐
+                    │   Broker 1      │
+                    │   (leader)      │
+                    │  ml.jobs part.0 │
+                    │  (only copy)    │
+                    └─────────────────┘
+                    ❌ goes down → queue gone
+
+
+                    3 node cluster (production):
+
+                        ┌─────────┐
+                        │  Kafka  │
+                        └────┬────┘
+                             │
+             ┌───────────────┼───────────────┐
+             │               │               │
+    ┌────────▼──────┐ ┌──────▼──────┐ ┌─────▼───────┐
+    │   Broker 1    │ │  Broker 2   │ │  Broker 3   │
+    │   (leader)    │ │  (replica)  │ │  (replica)  │
+    │ ml.jobs part.0│ │ml.jobs part.│ │ml.jobs part.│
+    │   (source)    │ │   (copy)    │ │   (copy)    │
+    └───────────────┘ └─────────────┘ └─────────────┘
+    ✅ one goes down → two copies remain
+```
+
+- **Jobs can run twice** — if the worker crashes after processing but before committing the offset, the job runs again on restart. Safe here because same text in = same result out. Not safe if the operation has side effects.
+
+- **KEDA threshold needs tuning** — `lagThreshold: 5` is a guess. Too low and you scale up on small spikes. Too high and the queue backs up before new workers start. Needs real load testing.
+
+- **Results can still be lost** — Kafka keeps jobs safe. But results are still written to a single Redis. Redis goes down, results are gone. Fix: Redis replication.
