@@ -244,7 +244,7 @@ Tool: KEDA reads Kafka consumer lag directly and scales workers based on how far
   Gap                        Closed by
   ──────────────────────────────────────────────────
   Job loss on crash          Phase 1 (durable queue, offset commit)
-  Unbounded queue            Phase 1 (queue depth metric) + backpressure logic
+  Unbounded queue            ✗ not done — queue depth visible via KEDA but no 429 rejection yet
   No replication             Phase 1 (Kafka is replicated by default)
   Accidental idempotency     Phase 1 (explicit job_id dedup in worker)
   No observability           Phase 4 (queue depth metric drives autoscaler — forces instrumentation)
